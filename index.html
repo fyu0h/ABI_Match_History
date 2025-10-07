@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WeGame 对局记录</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .blurred {
+            filter: blur(5px) grayscale(100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="container mx-auto p-4">
+        <!-- 当前日期和时间 -->
+        <div class="text-right text-gray-600 mb-4">
+            <p id="update-time">更新时间: 2025-10-07</p>
+        </div>
+
+        <!-- 日期选择 -->
+        <div class="mb-4 flex flex-col sm:flex-row items-center space-y-2 sm:space-y-0 sm:space-x-4">
+            <label for="start-date-select" class="mr-2">起始日期:</label>
+            <input type="date" id="start-date-select" class="border rounded p-2 w-full sm:w-auto" onchange="loadData()">
+            <label for="end-date-select" class="mr-2 mt-2 sm:mt-0">结束日期:</label>
+            <input type="date" id="end-date-select" class="border rounded p-2 w-full sm:w-auto" onchange="loadData()">
+        </div>
+
+        <!-- 用户信息 -->
+        <div class="bg-white shadow-md rounded-lg p-6 mb-6">
+            <h2 class="text-2xl font-bold mb-4">用户信息</h2>
+            <div id="role-info" class="space-y-2"></div>
+            <div id="daily-stats" class="mt-4 space-y-2"></div>
+            <div class="flex justify-end mt-2">
+                <button id="toggle-chart" class="text-blue-600 hover:underline" onclick="toggleChart()">隐藏图表</button>
+            </div>
+            <div id="chart-container" class="mt-4">
+                <canvas id="statsChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 对局列表 -->
+        <div class="bg-white shadow-md rounded-lg p-6">
+            <h2 class="text-2xl font-bold mb-4">对局列表</h2>
+            <div id="battle-list" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <script>
+        // 地图编号到名称的映射
+        const mapNameMapping = {
+            '1011401011': '前线要塞',
+            '1011601021': '电视台'
+        };
+
+        let myChart = null; // 用于存储图表实例
+        let chartVisible = true; // 图表可见状态
+
+        function formatValue(value) {
+            if (value >= 100000000) {
+                const yi = Math.floor(value / 100000000);
+                const remaining = value % 100000000;
+                const wan = Math.floor(remaining / 10000);
+                return yi + '亿' + wan + '万';
+            } else if (value >= 10000) {
+                return (value / 10000).toFixed(2) + '万';
+            }
+            return value;
+        }
+
+        function toggleChart() {
+            const chartContainer = document.getElementById('chart-container');
+            const toggleButton = document.getElementById('toggle-chart');
+            if (chartVisible) {
+                chartContainer.style.display = 'none';
+                toggleButton.textContent = '显示图表';
+            } else {
+                chartContainer.style.display = 'block';
+                toggleButton.textContent = '隐藏图表';
+            }
+            chartVisible = !chartVisible;
+        }
+
+        function toggleReveal(element) {
+            element.classList.toggle('blurred');
+        }
+
+        async function loadData() {
+            let roleInfo = {};
+            let battleList = [];
+            let errorMessage = '';
+
+            try {
+                // 尝试加载 role_info.json
+                const roleResponse = await fetch('role_info.json');
+                if (!roleResponse.ok) {
+                    throw new Error(`无法加载 role_info.json: ${roleResponse.statusText}`);
+                }
+                const roleData = await roleResponse.json();
+                roleInfo = roleData.role_info || {};
+            } catch (error) {
+                console.error('加载用户信息失败:', error);
+                errorMessage += `用户信息加载失败：${error.message}<br>`;
+            }
+
+            try {
+                // 加载 battle_data.json
+                const battleResponse = await fetch('battle_data.json');
+                if (!battleResponse.ok) {
+                    throw new Error(`无法加载 battle_data.json: ${battleResponse.statusText}`);
+                }
+                const battleDataArray = await battleResponse.json();
+                // 合并所有 battle_detail.players 数组
+                battleList = battleDataArray.flatMap(data => data.battle_detail?.players || []);
+            } catch (error) {
+                console.error('加载对局数据失败:', error);
+                errorMessage += `对局数据加载失败：${error.message}<br>`;
+            }
+
+            // 显示用户信息
+            const roleInfoDiv = document.getElementById('role-info');
+            if (Object.keys(roleInfo).length === 0) {
+                roleInfoDiv.innerHTML = '<p class="text-red-500">无法加载用户信息</p>';
+            } else {
+                const nickname = roleInfo.name || '未知';
+                const openid = roleInfo.openid || '未知';
+                const nicknameHtml = nickname === '未知' ? nickname : `<span class="cursor-pointer blurred" onclick="toggleReveal(this)">${nickname}</span>`;
+                const openidHtml = openid === '未知' ? openid : `<span class="cursor-pointer blurred" onclick="toggleReveal(this)">${openid}</span>`;
+                roleInfoDiv.innerHTML = `
+                    <div class="flex items-center space-x-4">
+                        ${roleInfo.icon ? `<img src="avatar.jpg" alt="头像" class="w-16 h-16 rounded-full">` : '<div class="w-16 h-16 rounded-full bg-gray-300 flex items-center justify-center">无头像</div>'}
+                        <div>
+                            <p><strong>昵称:</strong> ${nicknameHtml}</p>
+                            <p><strong>OpenID:</strong> ${openidHtml}</p>
+                            <p><strong>等级:</strong> ${roleInfo.level || '未知'}</p>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 获取用户选择的日期范围
+            const startDateInput = document.getElementById('start-date-select').value;
+            const endDateInput = document.getElementById('end-date-select').value;
+            const defaultToAll = startDateInput === '' && endDateInput === '';
+            const now = new Date();
+            const defaultDate = now.toISOString().split('T')[0];
+
+            let rangeBattlesFiltered = [];
+            let statsTitle = '';
+            let userBattles = [];
+
+            if (defaultToAll) {
+                // 默认显示全部
+                statsTitle = '全部统计';
+                const openid = roleInfo.openid || null;
+                rangeBattlesFiltered = openid ? battleList.filter(battle => battle.vopenid === openid) : [];
+                userBattles = [...rangeBattlesFiltered];
+            } else {
+                // 使用日期范围
+                const startDate = startDateInput || defaultDate;
+                let endDate = endDateInput || startDate;
+
+                // 确保结束日期不早于起始日期
+                if (new Date(endDate) < new Date(startDate)) {
+                    endDate = startDate;
+                }
+
+                // 为了过滤，结束日期加一天以包含当天所有记录
+                const endDateNext = new Date(endDate);
+                endDateNext.setDate(endDateNext.getDate() + 1);
+                const endDateFilter = endDateNext.toISOString().split('T')[0];
+
+                statsTitle = startDate === endDate ? `${startDate} 统计` : `${startDate} 到 ${endDate} 统计`;
+
+                const openid = roleInfo.openid || null;
+                rangeBattlesFiltered = openid ? battleList.filter(battle => battle.vopenid === openid && battle.dtEventTime >= startDate && battle.dtEventTime < endDateFilter) : [];
+                userBattles = openid ? battleList.filter(battle => battle.vopenid === openid && battle.dtEventTime >= startDate && battle.dtEventTime < endDateFilter) : [];
+            }
+
+            // 计算统计数据
+            const totalTakeOutValue = rangeBattlesFiltered.reduce((sum, battle) => sum + (battle.takeOutValue || 0), 0);
+            const totalKills = rangeBattlesFiltered.reduce((sum, battle) => sum + (battle.killPmc || 0) + (battle.killScav || 0), 0);
+            const successfulEscapes = rangeBattlesFiltered.filter(battle => battle.result === 1).length;
+            const totalBattles = rangeBattlesFiltered.length;
+            const kda = totalBattles > 0 ? (totalKills / (totalBattles - successfulEscapes || 1)).toFixed(2) : 0;
+            const escapeRate = totalBattles > 0 ? ((successfulEscapes / totalBattles) * 100).toFixed(2) : 0;
+            const totalDamage = rangeBattlesFiltered.reduce((sum, battle) => sum + (battle.totalRealDamage || 0), 0);
+            const avgAccuracy = rangeBattlesFiltered.length > 0 ? (rangeBattlesFiltered.reduce((sum, battle) => sum + (battle.totalAccuracy || 0), 0) / rangeBattlesFiltered.length).toFixed(2) : 0;
+            const totalHitHeadCount = rangeBattlesFiltered.reduce((sum, battle) => sum + (battle.totalHitHeadCount || 0), 0);
+            const totalHitCount = rangeBattlesFiltered.reduce((sum, battle) => sum + (battle.totalHitCount || 0), 0);
+            const headshotRate = totalHitCount > 0 ? ((totalHitHeadCount / totalHitCount) * 100).toFixed(2) : 0;
+
+            let totalTakeOutColor = 'text-black';
+            if (totalTakeOutValue >= 1000000) {
+                totalTakeOutColor = 'text-red-500';
+            } else if (totalTakeOutValue >= 500000) {
+                totalTakeOutColor = 'text-orange-500';
+            }
+
+            // 显示统计
+            const dailyStatsDiv = document.getElementById('daily-stats');
+            dailyStatsDiv.innerHTML = `
+                <h3 class="text-xl font-semibold mb-2">${statsTitle}</h3>
+                <p><strong>总带出价值:</strong> <span class="${totalTakeOutColor} text-lg font-bold">${formatValue(totalTakeOutValue)}</span></p>
+                <p><strong>击杀玩家数:</strong> ${totalKills}</p>
+                <p><strong>KDA:</strong> ${kda}</p>
+                <p><strong>撤离成功次数:</strong> ${successfulEscapes}</p>
+                <p><strong>撤离成功率:</strong> ${escapeRate}%</p>
+                <p><strong>总伤害:</strong> ${totalDamage}</p>
+                <p><strong>平均命中率:</strong> ${avgAccuracy}%</p>
+                <p><strong>爆头率:</strong> ${headshotRate}%</p>
+            `;
+
+            // 准备图表数据
+            // 按时间升序排序（最早的对局先）
+            userBattles.sort((a, b) => new Date(a.dtEventTime) - new Date(b.dtEventTime));
+
+            const labels = userBattles.map(battle => battle.dtEventTime ? battle.dtEventTime.replace('T', ' ') : '未知');
+            const takeOutValues = userBattles.map(battle => battle.takeOutValue || 0);
+            const killTotals = userBattles.map(battle => (battle.killPmc || 0) + (battle.killScav || 0));
+
+            // 隐藏或显示图表
+            const chartContainer = document.getElementById('chart-container');
+            const toggleButton = document.getElementById('toggle-chart');
+            if (userBattles.length === 0) {
+                chartContainer.style.display = 'none';
+                toggleButton.style.display = 'none';
+                if (myChart) {
+                    myChart.destroy();
+                    myChart = null;
+                }
+            } else {
+                toggleButton.style.display = 'block';
+                if (chartVisible) {
+                    chartContainer.style.display = 'block';
+                    toggleButton.textContent = '隐藏图表';
+                } else {
+                    chartContainer.style.display = 'none';
+                    toggleButton.textContent = '显示图表';
+                }
+
+                const data = {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '带出价值',
+                            data: takeOutValues,
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderColor: 'rgb(75, 192, 192)',
+                            borderWidth: 1,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: '击杀玩家数',
+                            data: killTotals,
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            borderColor: 'rgb(255, 99, 132)',
+                            borderWidth: 1,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                };
+
+                const config = {
+                    type: 'bar',
+                    data: data,
+                    options: {
+                        responsive: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                position: 'left',
+                                title: {
+                                    display: true,
+                                    text: '带出价值'
+                                }
+                            },
+                            y1: {
+                                beginAtZero: true,
+                                position: 'right',
+                                grid: {
+                                    drawOnChartArea: false // 避免网格线重叠
+                                },
+                                title: {
+                                    display: true,
+                                    text: '击杀玩家数'
+                                }
+                            }
+                        }
+                    }
+                };
+
+                // 销毁旧图表实例（如果存在）
+                if (myChart) {
+                    myChart.destroy();
+                }
+
+                // 创建新图表
+                myChart = new Chart(document.getElementById('statsChart'), config);
+            }
+
+            // 显示对局列表
+            const battleListDiv = document.getElementById('battle-list');
+            // 为列表按时间降序排序（最近的对局先）
+            userBattles.sort((a, b) => new Date(b.dtEventTime) - new Date(a.dtEventTime));
+            if (userBattles.length === 0) {
+                battleListDiv.innerHTML = '<p class="text-gray-500">暂无对局记录</p>';
+            } else {
+                battleListDiv.innerHTML = userBattles.map((battle, index) => {
+                    const takeOutValue = battle.takeOutValue || 0;
+                    let takeOutColor = 'text-black';
+                    if (takeOutValue >= 1000000) {
+                        takeOutColor = 'text-red-500';
+                    } else if (takeOutValue >= 500000) {
+                        takeOutColor = 'text-orange-500';
+                    }
+                    // 映射 mapnmae 到地图名称
+                    const mapName = mapNameMapping[battle.mapnmae] || battle.mapnmae || '未知';
+
+                    // 处理游戏模式
+                    let gameMode = '未知';
+                    if (battle.gamemodetype === 1) {
+                        gameMode = '伪装潜入';
+                    } else if (battle.gamemodetype === 2) {
+                        gameMode = '多人模式';
+                    } else if (battle.gamemodetype) {
+                        gameMode = battle.gamemodetype;
+                    }
+
+                    const playerKills = (battle.killPmc || 0) + (battle.killScav || 0);
+
+                    const roomId = battle.roomId || '未知';
+                    const roomIdHtml = roomId === '未知' ? roomId : `<span class="cursor-pointer blurred" onclick="toggleReveal(this)">${roomId}</span>`;
+
+                    const headshotRate = battle.totalHitCount > 0 ? ((battle.totalHitHeadCount / battle.totalHitCount) * 100).toFixed(2) : 0;
+
+                    return `
+                        <div class="border-b pb-4">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <p><strong>对局ID:</strong> ${roomIdHtml}</p>
+                                    <p><strong>时间:</strong> ${battle.dtEventTime || '未知'}</p>
+                                    <p><strong>游戏模式:</strong> ${gameMode}</p>
+                                    <p><strong>结果:</strong> <span class="${battle.result === 1 ? 'text-green-600' : 'text-red-600'}">${battle.result === 1 ? '胜利' : '失败'}</span></p>
+                                    <p><strong>击杀玩家数:</strong> ${playerKills}</p>
+                                    <p><strong>总伤害:</strong> ${battle.totalRealDamage || 0}</p>
+                                    <p><strong>移动距离:</strong> ${battle.walkDistance || 0} 米</p>
+                                    <p><strong>带出价值:</strong> <span class="${takeOutColor} text-lg font-bold">${formatValue(takeOutValue)}</span></p>
+                                </div>
+                                <button onclick="toggleDetails('battle-${index}')" class="text-blue-600 hover:underline">查看详情</button>
+                            </div>
+                            <div id="battle-${index}" class="hidden mt-2 bg-gray-50 p-4 rounded">
+                                <p><strong>地图:</strong> ${mapName}</p>
+                                <p><strong>队伍类型:</strong> ${battle.teamType === 1 ? '单人' : battle.teamType === 2 ? '小队' : '未知'}</p>
+                                <p><strong>击杀详情:</strong> PMC: ${battle.killPmc || 0}, Scav: ${battle.killScav || 0}, AI Scav: ${battle.killAiscav || 0}</p>
+                                <p><strong>命中率:</strong> ${battle.totalAccuracy ? battle.totalAccuracy.toFixed(2) : 0}%</p>
+                                <p><strong>爆头率:</strong> ${headshotRate}%</p>
+                                <p><strong>总命中次数:</strong> ${battle.totalHitCount || 0} (头部: ${battle.totalHitHeadCount || 0})</p>
+                                <p><strong>战利品:</strong> 装备: ${battle.lootEquipmentCount || 0}, 武器: ${battle.lootWeaponCount || 0}, 物品: ${battle.lootItemCount || 0}</p>
+                                <p><strong>逃生点:</strong> ${battle.escapepointname || '未知'}</p>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // 显示错误信息
+            if (errorMessage) {
+                battleListDiv.innerHTML += `<p class="text-red-500 mt-4">${errorMessage}</p>`;
+            }
+        }
+
+        // 切换对局详情显示
+        function toggleDetails(id) {
+            const element = document.getElementById(id);
+            element.classList.toggle('hidden');
+        }
+
+        // 页面加载时获取数据
+        window.onload = loadData;
+    </script>
+</body>
+</html>
