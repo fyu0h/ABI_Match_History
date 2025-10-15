@@ -1,5 +1,7 @@
 import requests
 import json
+import concurrent.futures
+from tqdm import tqdm
 
 # 获取所有对局记录 GetBattleList
 def fetch_all_battlelist(cookie):
@@ -63,10 +65,8 @@ def fetch_all_battlelist(cookie):
     return all_battles
 
 # 获取单局对局详情 GetBattleData
-def fetch_battle_data(cookie):
+def fetch_battle_data(cookie, battle_list):
     try:
-        print("开始获取对局列表...")
-        battle_list = fetch_all_battlelist(cookie)
         print(f"获取到 {len(battle_list)} 条对局记录")
         
         if not isinstance(battle_list, list):
@@ -76,7 +76,6 @@ def fetch_battle_data(cookie):
         if not room_ids:
             raise ValueError("未找到任何 roomId")
             
-        results = []
         url = "https://www.wegame.com.cn/api/v1/wegame.pallas.ca.CaBattle/GetBattleDetail"
         headers = {
             "accept": "*/*",
@@ -95,26 +94,44 @@ def fetch_battle_data(cookie):
         }
         cookies = {pair.split("=", 1)[0]: pair.split("=", 1)[1] for pair in cookie.split("; ")}
         
-        print(f"开始获取 {len(room_ids)} 个对局详情...")
-        for i, room_id in enumerate(room_ids, 1):
-            print(f"正在获取对局 {i}/{len(room_ids)} (roomId: {room_id})...")
+        session = requests.Session()
+        session.headers.update(headers)
+        session.cookies.update(cookies)
+        
+        def fetch_one(room_id):
+            data = {"from_src": "ca_helper", "roomId": room_id}
             try:
-                data = {"from_src": "ca_helper", "roomId": room_id}
-                response = requests.post(url, headers=headers, cookies=cookies, json=data)
+                response = session.post(url, json=data)
                 response.raise_for_status()
-                results.append(response.json())
-                print(f"成功获取对局 {i}/{len(room_ids)} (roomId: {room_id})")
+                return response.json()
             except requests.RequestException as e:
                 print(f"获取 roomId {room_id} 详情失败: {e}")
-                continue
-                
+                return None
+        
+        print(f"开始获取 {len(room_ids)} 个对局详情...")
+        
+        temp_results = {}
+        futures_to_idx = {}
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            for i, room_id in enumerate(room_ids):
+                future = executor.submit(fetch_one, room_id)
+                futures_to_idx[future] = i
+            
+            with tqdm(total=len(room_ids), desc="获取对局详情") as pbar:
+                for future in concurrent.futures.as_completed(futures_to_idx):
+                    i = futures_to_idx[future]
+                    temp_results[i] = future.result()
+                    pbar.update(1)
+        
+        results = [temp_results[i] for i in sorted(temp_results) if temp_results[i] is not None]
+        
         print(f"对局详情获取完成，共获取 {len(results)} 条详情")
         return results
         
     except Exception as e:
         print(f"获取对局详情失败: {e}")
         return []
-
 # 获取用户个人信息 GetRoleInfo
 def fetch_role_info(cookie):
     url = "https://www.wegame.com.cn/api/v1/wegame.pallas.ca.CaBattle/GetRoleInfo"
