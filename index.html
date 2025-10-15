@@ -10,9 +10,57 @@
         .blurred {
             filter: blur(5px) grayscale(100%);
         }
+        #loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .spinner {
+            border: 16px solid #f3f3f3;
+            border-top: 16px solid #3498db;
+            border-radius: 50%;
+            width: 120px;
+            height: 120px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #backToTop {
+            position: fixed;
+            bottom: 40px;
+            right: 40px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            font-size: 24px;
+            cursor: pointer;
+            display: none;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            transition: background-color 0.3s, transform 0.3s;
+            z-index: 1000;
+        }
+        #backToTop:hover {
+            background-color: #0056b3;
+            transform: scale(1.1);
+        }
     </style>
 </head>
 <body class="bg-gray-100 font-sans">
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+    </div>
     <div class="container mx-auto p-4">
         <!-- 当前日期和时间 -->
         <div class="text-right text-gray-600 mb-4">
@@ -44,8 +92,12 @@
         <div class="bg-white shadow-md rounded-lg p-6">
             <h2 class="text-2xl font-bold mb-4">对局列表</h2>
             <div id="battle-list" class="space-y-4"></div>
+            <div id="loading-indicator" class="text-center py-4 hidden">加载中...</div>
+            <div id="sentinel" class="h-1"></div> <!-- 哨兵元素用于 Intersection Observer -->
         </div>
     </div>
+
+    <button id="backToTop" onclick="scrollToTop()">↑</button>
 
     <script>
         // 地图编号到名称的映射
@@ -56,6 +108,11 @@
 
         let myChart = null; // 用于存储图表实例
         let chartVisible = true; // 图表可见状态
+        let allUserBattles = []; // 存储所有过滤后的对局数据
+        let currentPage = 0; // 当前页码
+        const pageSize = 20; // 每页加载的对局数量
+        let isLoading = false; // 是否正在加载
+        let observer; // Intersection Observer 实例
 
         function formatValue(value) {
             if (value >= 100000000) {
@@ -86,7 +143,7 @@
             element.classList.toggle('blurred');
         }
 
-        async function loadData() {
+        async function loadData(reset = true) {
             let roleInfo = {};
             let battleList = [];
             let errorMessage = '';
@@ -148,14 +205,14 @@
 
             let rangeBattlesFiltered = [];
             let statsTitle = '';
-            let userBattles = [];
+            allUserBattles = []; // 重置全局对局列表
 
             if (defaultToAll) {
                 // 默认显示全部
                 statsTitle = '全部统计';
                 const openid = roleInfo.openid || null;
                 rangeBattlesFiltered = openid ? battleList.filter(battle => battle.vopenid === openid) : [];
-                userBattles = [...rangeBattlesFiltered];
+                allUserBattles = [...rangeBattlesFiltered].sort((a, b) => new Date(b.dtEventTime) - new Date(a.dtEventTime)); // 按时间降序排序
             } else {
                 // 使用日期范围
                 const startDate = startDateInput || defaultDate;
@@ -175,7 +232,7 @@
 
                 const openid = roleInfo.openid || null;
                 rangeBattlesFiltered = openid ? battleList.filter(battle => battle.vopenid === openid && battle.dtEventTime >= startDate && battle.dtEventTime < endDateFilter) : [];
-                userBattles = openid ? battleList.filter(battle => battle.vopenid === openid && battle.dtEventTime >= startDate && battle.dtEventTime < endDateFilter) : [];
+                allUserBattles = [...rangeBattlesFiltered].sort((a, b) => new Date(b.dtEventTime) - new Date(a.dtEventTime)); // 按时间降序排序
             }
 
             // 计算统计数据
@@ -213,17 +270,16 @@
             `;
 
             // 准备图表数据
-            // 按时间升序排序（最早的对局先）
-            userBattles.sort((a, b) => new Date(a.dtEventTime) - new Date(b.dtEventTime));
-
-            const labels = userBattles.map(battle => battle.dtEventTime ? battle.dtEventTime.replace('T', ' ') : '未知');
-            const takeOutValues = userBattles.map(battle => battle.takeOutValue || 0);
-            const killTotals = userBattles.map(battle => (battle.killPmc || 0) + (battle.killScav || 0));
+            // 按时间升序排序（最早的对局先）用于图表
+            const chartBattles = [...rangeBattlesFiltered].sort((a, b) => new Date(a.dtEventTime) - new Date(b.dtEventTime));
+            const labels = chartBattles.map(battle => battle.dtEventTime ? battle.dtEventTime.replace('T', ' ') : '未知');
+            const takeOutValues = chartBattles.map(battle => battle.takeOutValue || 0);
+            const killTotals = chartBattles.map(battle => (battle.killPmc || 0) + (battle.killScav || 0));
 
             // 隐藏或显示图表
             const chartContainer = document.getElementById('chart-container');
             const toggleButton = document.getElementById('toggle-chart');
-            if (userBattles.length === 0) {
+            if (chartBattles.length === 0) {
                 chartContainer.style.display = 'none';
                 toggleButton.style.display = 'none';
                 if (myChart) {
@@ -300,14 +356,45 @@
                 myChart = new Chart(document.getElementById('statsChart'), config);
             }
 
-            // 显示对局列表
+            // 初始化无限滚动
             const battleListDiv = document.getElementById('battle-list');
-            // 为列表按时间降序排序（最近的对局先）
-            userBattles.sort((a, b) => new Date(b.dtEventTime) - new Date(a.dtEventTime));
-            if (userBattles.length === 0) {
+            battleListDiv.innerHTML = ''; // 清空列表
+            currentPage = 0;
+            isLoading = false;
+
+            if (allUserBattles.length === 0) {
                 battleListDiv.innerHTML = '<p class="text-gray-500">暂无对局记录</p>';
+                document.getElementById('loading-indicator').classList.add('hidden');
             } else {
-                battleListDiv.innerHTML = userBattles.map((battle, index) => {
+                // 加载第一页
+                loadMoreBattles();
+                // 设置 Intersection Observer
+                setupObserver();
+            }
+
+            // 显示错误信息
+            if (errorMessage) {
+                battleListDiv.innerHTML += `<p class="text-red-500 mt-4">${errorMessage}</p>`;
+            }
+
+            // 隐藏加载动画
+            document.getElementById('loading-overlay').style.display = 'none';
+        }
+
+        function loadMoreBattles() {
+            if (isLoading || currentPage * pageSize >= allUserBattles.length) return;
+            isLoading = true;
+            document.getElementById('loading-indicator').classList.remove('hidden');
+
+            // 模拟异步加载（因为数据已在内存中）
+            setTimeout(() => {
+                const start = currentPage * pageSize;
+                const end = Math.min(start + pageSize, allUserBattles.length);
+                const battlesToAdd = allUserBattles.slice(start, end);
+
+                const battleListDiv = document.getElementById('battle-list');
+                battlesToAdd.forEach((battle, relativeIndex) => {
+                    const absoluteIndex = start + relativeIndex;
                     const takeOutValue = battle.takeOutValue || 0;
                     let takeOutColor = 'text-black';
                     if (takeOutValue >= 1000000) {
@@ -335,7 +422,7 @@
 
                     const headshotRate = battle.totalHitCount > 0 ? ((battle.totalHitHeadCount / battle.totalHitCount) * 100).toFixed(2) : 0;
 
-                    return `
+                    const battleHtml = `
                         <div class="border-b pb-4">
                             <div class="flex justify-between items-center">
                                 <div>
@@ -348,9 +435,9 @@
                                     <p><strong>移动距离:</strong> ${battle.walkDistance || 0} 米</p>
                                     <p><strong>带出价值:</strong> <span class="${takeOutColor} text-lg font-bold">${formatValue(takeOutValue)}</span></p>
                                 </div>
-                                <button onclick="toggleDetails('battle-${index}')" class="text-blue-600 hover:underline">查看详情</button>
+                                <button onclick="toggleDetails('battle-${absoluteIndex}')" class="text-blue-600 hover:underline">查看详情</button>
                             </div>
-                            <div id="battle-${index}" class="hidden mt-2 bg-gray-50 p-4 rounded">
+                            <div id="battle-${absoluteIndex}" class="hidden mt-2 bg-gray-50 p-4 rounded">
                                 <p><strong>地图:</strong> ${mapName}</p>
                                 <p><strong>队伍类型:</strong> ${battle.teamType === 1 ? '单人' : battle.teamType === 2 ? '小队' : '未知'}</p>
                                 <p><strong>击杀详情:</strong> PMC: ${battle.killPmc || 0}, Scav: ${battle.killScav || 0}, AI Scav: ${battle.killAiscav || 0}</p>
@@ -362,19 +449,50 @@
                             </div>
                         </div>
                     `;
-                }).join('');
-            }
+                    battleListDiv.insertAdjacentHTML('beforeend', battleHtml);
+                });
 
-            // 显示错误信息
-            if (errorMessage) {
-                battleListDiv.innerHTML += `<p class="text-red-500 mt-4">${errorMessage}</p>`;
-            }
+                currentPage++;
+                isLoading = false;
+                document.getElementById('loading-indicator').classList.add('hidden');
+
+                // 如果已加载所有数据，断开 observer
+                if (currentPage * pageSize >= allUserBattles.length) {
+                    observer.disconnect();
+                }
+            }, 300); // 轻微延迟模拟加载
+        }
+
+        function setupObserver() {
+            if (observer) observer.disconnect();
+            observer = new IntersectionObserver(entries => {
+                if (entries[0].isIntersecting) {
+                    loadMoreBattles();
+                }
+            }, { threshold: 0.1 });
+
+            const sentinel = document.getElementById('sentinel');
+            observer.observe(sentinel);
         }
 
         // 切换对局详情显示
         function toggleDetails(id) {
             const element = document.getElementById(id);
             element.classList.toggle('hidden');
+        }
+
+        // 返回顶部功能
+        window.onscroll = function() {
+            const button = document.getElementById("backToTop");
+            if (document.body.scrollTop > 100 || document.documentElement.scrollTop > 100) {
+                button.style.display = "block";
+            } else {
+                button.style.display = "none";
+            }
+        };
+
+        function scrollToTop() {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
         // 页面加载时获取数据
