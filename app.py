@@ -1,11 +1,17 @@
-from flask import Flask, request, url_for, send_from_directory, redirect
+from flask import Flask, request, url_for, send_from_directory, redirect, session, render_template_string
 import os
 import json
 import datetime
 from getInfo import fetch_all_battlelist, fetch_battle_data, fetch_role_info
 import requests  # 用于下载图片
+import shutil  # 用于删除目录
 
 app = Flask(__name__)
+app.secret_key = 'super_secret_key'  # 用于会话管理，请替换为安全的密钥
+
+# 管理员用户名和密码（简单认证，生产环境请使用更安全的机制，如 Flask-Login + 数据库）
+ADMIN_USERNAME = 'big'
+ADMIN_PASSWORD = 'houyifan624'  # 请更改为强密码
 
 # 主页：输入cookie的表单
 @app.route('/', methods=['GET', 'POST'])
@@ -13,7 +19,7 @@ def index():
     if request.method == 'POST':
         cookie = request.form.get('cookie', '').strip()
         if not cookie:
-            return "Cookie不能为空", 400
+            return render_error_page("Cookie不能为空")
 
         # 解析 cookie
         try:
@@ -24,22 +30,28 @@ def index():
                     key, value = pair.split('=', 1)
                     cookies_dict[key.strip()] = value.strip()
         except Exception as e:
-            return f"Cookie格式无效: {e}", 400
+            return render_error_page(f"Cookie格式无效: {e}")
 
         required_keys = ['tgp_id', 'tgp_ticket', 'tgp_env', 'tgp_user_type', 'tgp_third_openid']
         missing_keys = [key for key in required_keys if key not in cookies_dict]
         if missing_keys:
-            return f"Cookie缺少以下项: {', '.join(missing_keys)}", 400
+            return render_error_page(f"Cookie缺少以下项: {', '.join(missing_keys)}")
 
-        # 调用数据接口
-        battle_list = fetch_all_battlelist(cookie)
-        battle_data = fetch_battle_data(cookie)
+        # 先获取用户信息
         role_info = fetch_role_info(cookie)
+
+        # 检查 role_info 是否包含错误代码 8000102
+        if role_info.get("result", {}).get("error_code") == 8000102:
+            return render_error_page("登录信息已过期，请重新登录获取新的 Cookie")
 
         # 获取 openid 与头像链接
         openid = role_info.get("role_info", {}).get("openid", "unknown")
-        username = role_info.get("role_info", {}).get("name", "未知用户")  # 获取用户名，默认为“未知用户”
+        username = role_info.get("role_info", {}).get("name", "未知用户")
         picture_url = role_info.get("role_info", {}).get("icon", "")
+
+        # 继续获取对局数据
+        battle_list = fetch_all_battlelist(cookie)
+        battle_data = fetch_battle_data(cookie, battle_list)
 
         user_dir = os.path.join('user_info', openid)
         os.makedirs(user_dir, exist_ok=True)
@@ -71,7 +83,7 @@ def index():
             html_content = f.read()
         current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         html_content = html_content.replace('更新时间: 2025-10-07', f'更新时间: {current_time}')
-        html_content = html_content.replace('<title>暗区突围：无限 战绩查询助手</title>', f'<title>{username}对局记录</title>')  # 更新标题
+        html_content = html_content.replace('<title>暗区突围：无限 战绩查询助手</title>', f'<title>{username}对局记录</title>')
 
         with open(os.path.join(user_dir, 'index.html'), 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -147,7 +159,7 @@ def index():
         '''
 
     # 美化后的输入页面（适配移动端）
-    jump_url = url_for('jump', _external=True)  # Generate the URL for the /jump route
+    jump_url = url_for('jump', _external=True)
     return f'''
     <!DOCTYPE html>
     <html lang="zh">
@@ -161,10 +173,10 @@ def index():
                 background: linear-gradient(135deg, #e0f7fa, #e3f2fd);
                 margin: 0;
                 padding: 0;
-                height: 100%; /* 确保 flex 居中生效 */
+                height: 100%;
                 display: flex;
                 justify-content: center;
-                align-items: center; /* 垂直居中 */
+                align-items: center;
             }}
             .container {{
                 max-width: 90%;
@@ -174,7 +186,7 @@ def index():
                 box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
                 padding: 30px;
                 text-align: center;
-                margin: 0; /* 移除 margin，flex 已居中 */
+                margin: 0;
             }}
             h1 {{
                 color: #1976d2;
@@ -323,6 +335,83 @@ def index():
     </html>
     '''
 
+# 错误页面渲染函数
+def render_error_page(message):
+    home_url = url_for('index', _external=True)
+    return f'''
+    <!DOCTYPE html>
+    <html lang="zh">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>错误 - 暗区突围：无限 战绩查询助手</title>
+        <style>
+            body {{
+                font-family: "Segoe UI", Arial, sans-serif;
+                background: linear-gradient(135deg, #e0f7fa, #e3f2fd);
+                margin: 0;
+                padding: 0;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                opacity: 0;
+                animation: fadeIn 1s forwards;
+            }}
+            @keyframes fadeIn {{
+                to {{ opacity: 1; }}
+            }}
+            .container {{
+                max-width: 90%;
+                width: 500px;
+                background: white;
+                border-radius: 16px;
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+                padding: 30px;
+                text-align: center;
+                transform: translateY(-20px);
+                animation: slideIn 0.5s forwards;
+            }}
+            @keyframes slideIn {{
+                to {{ transform: translateY(0); }}
+            }}
+            h1 {{
+                color: #d32f2f;
+                font-size: 1.8rem;
+                margin-bottom: 20px;
+            }}
+            p {{
+                font-size: 1rem;
+                color: #333;
+                margin-bottom: 20px;
+            }}
+            a {{
+                color: #1976d2;
+                text-decoration: none;
+                font-size: 1rem;
+                transition: color 0.3s;
+            }}
+            a:hover {{
+                color: #0d47a1;
+                text-decoration: underline;
+            }}
+        </style>
+        <script>
+            setTimeout(function(){{
+                window.location.href = "{home_url}";
+            }}, 3000);
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <h1>❌ {message}</h1>
+            <p>请返回首页重新获取</p>
+            <a href="{home_url}">返回首页</a>
+        </div>
+    </body>
+    </html>
+    ''', 400
+
 # OpenID 跳转页面
 @app.route('/jump', methods=['GET', 'POST'])
 def jump():
@@ -433,6 +522,7 @@ def jump():
     </body>
     </html>
     '''
+
 # 用户信息页面
 @app.route('/user_info/<openid>/index.html')
 def view_user_info(openid):
@@ -532,6 +622,109 @@ def render_not_found_page():
     </body>
     </html>
     ''', 404
+
+# 管理后台登录页面
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin_dashboard'))
+        else:
+            return "登录失败：用户名或密码错误", 401
+    return '''
+    <!DOCTYPE html>
+    <html lang="zh">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>管理员登录</title>
+        <style>
+            body { font-family: Arial, sans-serif; background: #f0f0f0; display: flex; justify-content: center; align-items: center; height: 100vh; }
+            form { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+            input { display: block; margin: 10px 0; padding: 10px; width: 200px; }
+            button { padding: 10px; background: #1976d2; color: white; border: none; cursor: pointer; }
+        </style>
+    </head>
+    <body>
+        <form method="post">
+            <h2>管理员登录</h2>
+            <input type="text" name="username" placeholder="用户名" required>
+            <input type="password" name="password" placeholder="密码" required>
+            <button type="submit">登录</button>
+        </form>
+    </body>
+    </html>
+    '''
+
+# 管理后台仪表盘
+@app.route('/admin')
+def admin_dashboard():
+    if not session.get('admin_logged_in'):
+        return redirect(url_for('admin_login'))
+    
+    user_dir = 'user_info'
+    users = []
+    if os.path.exists(user_dir):
+        users = [d for d in os.listdir(user_dir) if os.path.isdir(os.path.join(user_dir, d))]
+    
+    user_list_html = '<ul>'
+    for openid in users:
+        role_info_path = os.path.join(user_dir, openid, 'role_info.json')
+        username = '未知用户'
+        if os.path.exists(role_info_path):
+            try:
+                with open(role_info_path, 'r', encoding='utf-8') as f:
+                    role_info = json.load(f)
+                    username = role_info.get('role_info', {}).get('name', '未知用户')
+            except Exception:
+                pass
+        view_url = url_for('view_user_info', openid=openid, _external=True)
+        delete_url = url_for('admin_delete_user', openid=openid)
+        user_list_html += f'<li>{username} ({openid}) - <a href="{view_url}">查看</a> - <a href="{delete_url}" onclick="return confirm(\'确认删除?\')">删除</a></li>'
+    user_list_html += '</ul>'
+    
+    return f'''
+    <!DOCTYPE html>
+    <html lang="zh">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>管理后台</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background: #f0f0f0; padding: 20px; }}
+            h1 {{ color: #333; }}
+            ul {{ list-style: none; padding: 0; }}
+            li {{ background: white; margin: 10px 0; padding: 10px; border-radius: 8px; box-shadow: 0 0 5px rgba(0,0,0,0.1); }}
+            a {{ color: #1976d2; text-decoration: none; margin-right: 10px; }}
+        </style>
+    </head>
+    <body>
+        <h1>用户管理</h1>
+        {user_list_html}
+        <a href="{url_for('admin_logout')}">退出登录</a>
+    </body>
+    </html>
+    '''
+
+# 删除用户
+@app.route('/admin/delete/<openid>')
+def admin_delete_user(openid):
+    if not session.get('admin_logged_in'):
+        return redirect(url_for('admin_login'))
+    
+    user_dir = os.path.join('user_info', openid)
+    if os.path.exists(user_dir):
+        shutil.rmtree(user_dir)
+    return redirect(url_for('admin_dashboard'))
+
+# 退出登录
+@app.route('/admin/logout')
+def admin_logout():
+    session.pop('admin_logged_in', None)
+    return redirect(url_for('index'))
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
